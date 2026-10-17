@@ -1,0 +1,59 @@
+name: Test, build and release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: x64
+      - run: python -m pip install -r requirements.txt
+      - run: python -m unittest discover -s tests -v
+      - run: python build_release.py --output dist/v2
+      - name: Smoke test bundled runtime
+        run: |
+          & .\dist\v2\BuildExploreControl\runtime\python.exe -B .\dist\v2\BuildExploreControl\app\app.py --version
+          & .\dist\v2\BuildExploreControl\runtime\python.exe -B -c "import tkinter,paramiko,keyring,cryptography,waitress; r=tkinter.Tk();r.withdraw();r.update_idletasks();r.destroy()"
+      - name: Sign update metadata
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        run: |
+          $version = python -c "from shared import VERSION;print(VERSION)"
+          if ($env:GITHUB_REF_NAME -ne "v$version") { throw 'Tag must match the app version.' }
+          if (-not $env:RELEASE_SIGNING_KEY) { throw 'Configure RELEASE_SIGNING_KEY before releasing.' }
+          python sign_release.py --installer "dist/v2/BuildExploreControl-$version.msi" --url "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:GITHUB_REF_NAME/BuildExploreControl-$version.msi" --output dist/v2/release.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Windows-installer
+          path: |
+            dist/v2/*.msi
+            dist/v2/release.json
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: windows
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: Windows-installer
+          path: release
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" release/*.msi release/release.json --repo "$GITHUB_REPOSITORY" --title "Build Explore Control $GITHUB_REF_NAME" --generate-notes

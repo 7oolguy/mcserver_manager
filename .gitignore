@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.venv/
+build/
+dist/
+*.msi
+*.cab
+*.sqlite3*
+*.becinvite
+*.env
+settings.json
+player-settings.json
+shared-catalog.json
+release.json
+*.log

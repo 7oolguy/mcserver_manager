@@ -1,0 +1,27 @@
+services:
+  app:
+    build: .
+    env_file: service.env
+    restart: unless-stopped
+    volumes:
+      - shared-data:/data
+    expose:
+      - '8765'
+  proxy:
+    image: caddy:2
+    restart: unless-stopped
+    environment:
+      BEC_DOMAIN: ${BEC_DOMAIN:?Set BEC_DOMAIN to the chosen domain}
+    ports:
+      - '80:80'
+      - '443:443'
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - app
+volumes:
+  shared-data:
+  caddy-data:
+  caddy-config:

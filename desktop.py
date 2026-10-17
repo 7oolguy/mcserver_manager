@@ -1,0 +1,246 @@
+"""Simple player-first desktop UI; hosting administration stays in Advanced."""
+import json
+import os
+from pathlib import Path
+import queue
+import subprocess
+import sys
+import threading
+import time
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox, simpledialog
+import webbrowser
+
+from core import CONFIG_PATH
+import launcher
+import shared
+import updates
+
+
+class Desktop:
+    def __init__(self, root, client=None, start_workers=True):
+        self.root = root; self.client = client
+        self.events = queue.Queue(); self.busy = False; self.refreshing = False; self.closed = False
+        self.snapshot = None; self.fresh_at = 0; self.ids = []; self.update = None
+        root.title('Build Explore Control ' + shared.VERSION); root.geometry('820x650'); root.minsize(760, 610)
+        style = ttk.Style(root); style.theme_use('clam')
+        style.configure('.', font=('Segoe UI', 11)); style.configure('TButton', padding=(14, 9))
+        style.configure('Title.TLabel', font=('Segoe UI', 25, 'bold')); style.configure('State.TLabel', font=('Segoe UI', 18, 'bold'))
+        style.configure('Play.TButton', font=('Segoe UI', 14, 'bold'), padding=(24, 14))
+        outer = ttk.Frame(root, padding=24); outer.pack(fill='both', expand=True)
+        ttk.Label(outer, text='Let’s play Minecraft', style='Title.TLabel').pack(anchor='w')
+        ttk.Label(outer, text='Your modpacks, worlds, and friends in one place.').pack(anchor='w', pady=(4, 16))
+        notebook = ttk.Notebook(outer); notebook.pack(fill='both', expand=True)
+        self.play_tab = ttk.Frame(notebook, padding=20); notebook.add(self.play_tab, text='Play')
+        self.connection_tab = ttk.Frame(notebook, padding=20); notebook.add(self.connection_tab, text='Connection')
+        update_tab = ttk.Frame(notebook, padding=20); notebook.add(update_tab, text='Updates')
+        self.state = tk.StringVar(value='Connecting…'); self.details = tk.StringVar(value='Checking the server and shared sessions.')
+        self.players = tk.StringVar(); self.message = tk.StringVar(value='')
+        ttk.Label(self.play_tab, textvariable=self.state, style='State.TLabel').pack(anchor='w')
+        ttk.Label(self.play_tab, textvariable=self.details, wraplength=690).pack(anchor='w', pady=6)
+        ttk.Label(self.play_tab, textvariable=self.players, wraplength=690).pack(anchor='w', pady=(0, 20))
+        ttk.Label(self.play_tab, text='Choose your modpack').pack(anchor='w')
+        self.selection = ttk.Combobox(self.play_tab, state='readonly'); self.selection.pack(fill='x', pady=8)
+        self.selection.bind('<<ComboboxSelected>>', lambda event: self.render_permissions())
+        self.play_button = ttk.Button(self.play_tab, text='Play Minecraft', style='Play.TButton', command=self.play, state='disabled')
+        self.play_button.pack(fill='x', pady=(8, 12))
+        actions = ttk.Frame(self.play_tab); actions.pack(fill='x')
+        ttk.Button(actions, text='Locate installed pack', command=self.locate).pack(side='left', padx=(0, 8))
+        ttk.Button(actions, text='Get this modpack', command=self.get_pack).pack(side='left')
+        ttk.Button(actions, text='Refresh', command=self.refresh).pack(side='right')
+        ttk.Label(self.play_tab, textvariable=self.message, wraplength=680).pack(anchor='w', pady=12)
+        ttk.Label(self.connection_tab, text='Connect with a private invitation', style='State.TLabel').pack(anchor='w')
+        ttk.Label(self.connection_tab, text='Open the invitation file from the owner. You don’t need a hosting password.\nYour Minecraft account and installed modpacks stay on this computer.', wraplength=680).pack(anchor='w', pady=12)
+        ttk.Button(self.connection_tab, text='Open invitation…', command=self.open_invite).pack(anchor='w')
+        self.connection = tk.StringVar(value=shared.load_local()['service_url'] or ('This computer · owner access' if CONFIG_PATH.exists() else 'Not connected yet'))
+        ttk.Label(self.connection_tab, textvariable=self.connection, wraplength=680).pack(anchor='w', pady=12)
+        ttk.Button(self.connection_tab, text='Choose CurseForge instances folder…', command=self.choose_root).pack(anchor='w', pady=8)
+        if CONFIG_PATH.exists():
+            ttk.Button(self.connection_tab, text='Create a friend invitation…', command=self.invite).pack(anchor='w', pady=8)
+            ttk.Button(self.connection_tab, text='Advanced server controls', command=self.advanced).pack(anchor='w', pady=8)
+        self.update_text = tk.StringVar(value='Version ' + shared.VERSION + '\nUpdates are installed when the app is idle. Settings and worlds are preserved.')
+        ttk.Label(update_tab, textvariable=self.update_text, wraplength=680).pack(anchor='w', pady=12)
+        self.auto_update = tk.BooleanVar(value=shared.load_local()['auto_update'])
+        ttk.Checkbutton(update_tab, text='Keep this app up to date automatically', variable=self.auto_update, command=self.save_update_preference).pack(anchor='w')
+        ttk.Button(update_tab, text='Check for updates', command=self.check_updates).pack(anchor='w', pady=12)
+        self.install_button = ttk.Button(update_tab, text='Install verified update', command=self.install_update, state='disabled'); self.install_button.pack(anchor='w')
+        self.progress = ttk.Progressbar(outer, mode='indeterminate'); self.progress.pack(fill='x', pady=(12, 4))
+        ttk.Label(outer, text='Minecraft sign-in is handled by CurseForge. Join through Multiplayer after loading.', wraplength=720).pack(anchor='w')
+        root.protocol('WM_DELETE_WINDOW', self.close)
+        if start_workers:
+            root.after(100, self.refresh); root.after(5000, self.periodic_refresh)
+            root.after(200, self.poll); root.after(2500, self.check_updates)
+
+    def run(self, function, success=None):
+        if self.busy: return
+        self.busy = True; self.progress.start(12); self.render_permissions()
+        def worker():
+            try: self.events.put(('done', function(), success))
+            except Exception as error: self.events.put(('error', str(error), None))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def poll(self):
+        if self.closed: return
+        try:
+            while True:
+                kind, value, callback = self.events.get_nowait()
+                if kind == 'snapshot':
+                    self.refreshing = False; self.snapshot = value; self.fresh_at = time.monotonic(); self.render()
+                elif kind == 'offline':
+                    self.refreshing = False; self.state.set('Connection unavailable'); self.details.set(value); self.fresh_at = 0; self.render_permissions()
+                elif kind == 'update': self.update_ready(value)
+                else:
+                    self.busy = False; self.progress.stop()
+                    if kind == 'error': self.message.set(value); messagebox.showerror('Could not complete this action', value)
+                    elif callback: callback(value)
+                    self.render_permissions()
+        except queue.Empty: pass
+        self.root.after(150, self.poll)
+
+    def refresh(self):
+        if self.closed: return
+        if not self.refreshing:
+            self.refreshing = True
+            def worker():
+                try:
+                    if self.client is None: self.client = shared.default_client()
+                    if self.client is None: raise ValueError('Open an invitation in Connection to get started.')
+                    if isinstance(self.client, shared.LocalClient) and not shared.CATALOG.exists(): shared.export_catalog(self.client.manager)
+                    self.events.put(('snapshot', self.client.snapshot(), None))
+                except Exception as error: self.events.put(('offline', str(error), None))
+            threading.Thread(target=worker, daemon=True).start()
+    def periodic_refresh(self):
+        if self.closed: return
+        self.refresh(); self.root.after(5000, self.periodic_refresh)
+
+    def selected(self):
+        index = self.selection.current()
+        return self.ids[index] if 0 <= index < len(self.ids) else None
+
+    def render(self):
+        data = self.snapshot; previous = self.selected(); self.ids = list(data['sessions'])
+        self.selection['values'] = [data['sessions'][key]['label'] for key in self.ids]
+        selected = previous if previous in self.ids else data.get('active')
+        if selected in self.ids: self.selection.current(self.ids.index(selected))
+        active = data['sessions'].get(data.get('active'), {}).get('label', 'No session selected')
+        self.state.set('Server ' + data['server']['state'].replace('_', ' '))
+        self.details.set(active + '\n' + data['address'])
+        players = data.get('players', {}); count = players.get('online')
+        self.players.set(('Players online: ' + str(count) if count is not None else 'Player count unavailable') + (' · ' + ', '.join(players.get('names', [])) if players.get('names') else ''))
+        if data.get('operation'): self.message.set('A server operation is in progress. Everyone will see the result here.')
+        self.render_permissions()
+
+    def render_permissions(self):
+        allowed = bool(self.snapshot and self.selected() and self.fresh_at and time.monotonic() - self.fresh_at < 20 and not self.busy)
+        if self.snapshot:
+            data = self.snapshot
+            allowed = allowed and not data.get('operation') and not data.get('recovery_required')
+            if data['role'] == 'player': allowed = allowed and self.selected() == data['active'] and data['server']['state'] == 'running'
+        self.play_button.configure(state='normal' if allowed else 'disabled')
+
+    def play(self):
+        key = self.selected()
+        if not key or not self.snapshot: return
+        data = self.snapshot; item = data['sessions'][key]; config = shared.load_local()
+        switching = key != data['active']
+        confirm = False
+        if switching and data['server']['state'] != 'offline':
+            confirm = messagebox.askyesno('Switch modpack?', 'This saves and stops the current session. Anyone online will disconnect. Continue?')
+            if not confirm: return
+        self.message.set('Checking your installed modpack, then preparing the server…')
+        def operation():
+            folder = shared.find_profile(item, config['instances_root'], config['profiles'].get(key), verify=True)
+            info = launcher.profile_info(str(folder))
+            self.client.play(key, allow_disconnect=confirm)
+            manager = type('Connection', (), {'config': {'game_host': data['address'].rsplit(':', 1)[0], 'game_port': data['address'].rsplit(':', 1)[1]}})()
+            return launcher.request_launch(info, manager)
+        self.run(operation, lambda result: self.message.set('Minecraft is launching. Join ' + result['server_address'] + ' through Multiplayer.'))
+
+    def locate(self):
+        key = self.selected()
+        if not key: return
+        folder = filedialog.askdirectory(title='Choose this modpack’s CurseForge profile folder')
+        if not folder: return
+        def operation():
+            found = shared.find_profile(self.snapshot['sessions'][key], root=Path(folder).parent, mapped=folder, verify=True)
+            if found.resolve() != Path(folder).resolve(): raise ValueError('That folder does not match this modpack. Select ' + str(found))
+            config = shared.load_local(); config['profiles'][key] = folder; shared.save_local(config)
+        self.run(operation, lambda result: self.message.set('Matching modpack found. You can play now.'))
+
+    def get_pack(self):
+        key = self.selected()
+        if not key: return
+        url = self.snapshot['sessions'][key].get('install_url', '')
+        from urllib.parse import urlparse
+        parsed = urlparse(url)
+        if parsed.scheme == 'https' and parsed.hostname in ('www.curseforge.com', 'curseforge.com'): webbrowser.open(url)
+        else: messagebox.showinfo('Get this modpack', 'Ask the owner for this custom modpack export and import it in CurseForge.')
+
+    def open_invite(self):
+        filename = filedialog.askopenfilename(filetypes=[('Private invitation', '*.becinvite'), ('JSON', '*.json')])
+        if not filename: return
+        def operation():
+            path = Path(filename)
+            if path.stat().st_size > 32768: raise ValueError('Invalid invitation file.')
+            shared.connect(json.loads(path.read_text(encoding='utf-8-sig')))
+            self.client = shared.RemoteClient()
+        self.run(operation, lambda result: (self.connection.set(shared.load_local()['service_url']), self.refresh()))
+
+    def choose_root(self):
+        folder = filedialog.askdirectory(title='Choose CurseForge’s Instances folder')
+        if folder:
+            config = shared.load_local(); config['instances_root'] = folder; shared.save_local(config)
+
+    def invite(self):
+        url = simpledialog.askstring('Shared service address', 'HTTPS address of the deployed shared service:')
+        if not url: return
+        name = simpledialog.askstring('Friend access', 'Your friend’s name (player access):')
+        if not name: return
+        filename = filedialog.asksaveasfilename(defaultextension='.becinvite', initialfile='Minecraft-invitation.becinvite')
+        if not filename: return
+        def operation():
+            from service import Service
+            invite = Service().invite(url, name)
+            with Path(filename).open('x', encoding='utf-8') as stream: json.dump(invite, stream, indent=2)
+        self.run(operation, lambda result: messagebox.showinfo('Invitation created', 'Send this file privately. The shared service must be deployed with this same access database.'))
+
+    def advanced(self):
+        entry = [] if getattr(sys, 'frozen', False) else [str(Path(__file__).with_name('app.py'))]
+        subprocess.Popen([sys.executable, *entry, '--advanced'], creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+
+    def save_update_preference(self):
+        config = shared.load_local(); config['auto_update'] = self.auto_update.get(); shared.save_local(config)
+
+    def check_updates(self):
+        def worker():
+            try:
+                result = updates.check()
+                if result['state'] == 'available': result['path'] = str(updates.download(result['release']))
+                self.events.put(('update', result, None))
+            except Exception: self.events.put(('update', {'state': 'error'}, None))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def update_ready(self, result):
+        if result['state'] == 'available':
+            self.update = result; self.update_text.set('A verified update is ready: ' + result['release']['version'])
+            self.install_button.configure(state='normal')
+            if self.auto_update.get() and (getattr(sys, 'frozen', False) or shared.installed_app()): self.root.after(1000, self.install_update)
+        elif result['state'] == 'not_configured': self.update_text.set('Version ' + shared.VERSION + '\n' + result['message'])
+        elif result['state'] == 'current': self.update_text.set('You have the latest verified release: ' + shared.VERSION)
+        else: self.update_text.set('Could not check updates. Your current app is unchanged; try again later.')
+
+    def install_update(self):
+        if not self.update: return
+        if self.busy or (self.snapshot and self.snapshot.get('operation')):
+            self.root.after(5000, self.install_update); return
+        try:
+            updates.install(self.update['path'], self.update['release']); self.closed = True; self.root.destroy()
+        except Exception as error: messagebox.showerror('Update not installed', str(error))
+
+    def close(self):
+        if self.busy: messagebox.showinfo('Working', 'Please let the current action finish before closing.'); return
+        self.closed = True; self.root.destroy()
+
+
+def gui():
+    root = tk.Tk(); Desktop(root); root.mainloop()

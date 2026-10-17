@@ -1,0 +1,4 @@
+paramiko==5.0.0
+keyring==25.7.0
+waitress==3.0.2
+cryptography==50.0.2
