@@ -10,7 +10,7 @@ from collections import deque
 from datetime import datetime
 from pathlib import Path
 
-from core import Manager, LogCursor, redact, secret, settings, save_settings, store_secret
+from core import Manager, LogCursor, redact, secret, settings, save_settings, store_secret, CONFIG_PATH
 
 
 def cli(argv):
@@ -87,7 +87,7 @@ def gui():
 
     root = tk.Tk()
     from shared import VERSION
-    root.title('Build Explore Control ' + VERSION + ' · Advanced')
+    root.title('Build Explore Control ' + VERSION + ' · Admin · ' + settings()['server_id'])
     root.geometry('1080x850')
     root.minsize(1000, 820)
     style = ttk.Style(root)
@@ -190,6 +190,8 @@ def gui():
     server_state = tk.StringVar(value='Status: not checked')
     ttk.Label(server, textvariable=server_state, font=('Segoe UI', 14, 'bold')).pack(anchor='w', pady=8)
     ttk.Label(server, text=settings()['game_host'] + ':' + str(settings()['game_port'])).pack(anchor='w')
+    active_pack_text = tk.StringVar(value='Loading saved modpack sessions…')
+    ttk.Label(server, textvariable=active_pack_text).pack(anchor='w', pady=4)
     connection_text = tk.StringVar(value='Connecting…')
     ttk.Label(server, textvariable=connection_text).pack(anchor='w', pady=(4, 8))
     controls = row(server)
@@ -425,6 +427,9 @@ def gui():
         for key, item in data.get('sessions', {}).items():
             session_list.insert('', 'end', iid=key, values=(item['label'], 'Active' if key == data['active'] else 'Saved'))
             if key == data['active']: session_list.selection_set(key)
+        active = data.get('sessions', {}).get(data.get('active'), {})
+        active_pack_text.set('Active modpack: ' + active.get('label', 'No session registered'))
+        if active.get('client_path'): client_path.set(active['client_path'])
         if data.get('recovery_required'):
             status_text.set('Session operation interrupted. Use Recover interrupted switch before starting.')
     def refresh_sessions():
@@ -485,15 +490,20 @@ def gui():
     notebook.bind('<<NotebookTabChanged>>', session_tab_changed)
 
     client = tab('Client Pack')
+    client_path = tk.StringVar(value=settings()['client_path'])
     ttk.Label(client, text='Installed client profile', font=('Segoe UI', 12, 'bold')).pack(anchor='w', pady=8)
-    ttk.Label(client, text=settings()['client_path'], wraplength=880).pack(anchor='w', pady=8)
-    def open_profile(): os.startfile(settings()['client_path'])
+    ttk.Label(client, textvariable=client_path, wraplength=880).pack(anchor='w', pady=8)
+    def open_profile(): os.startfile(client_path.get())
     button(row(client), 'Open client folder', lambda: ui_action(open_profile))
-    button(row(client), 'Open client mods', lambda: os.startfile(Path(settings()['client_path']) / 'mods'))
-    button(row(client), 'Open client config', lambda: os.startfile(Path(settings()['client_path']) / 'config'))
+    button(row(client), 'Open client mods', lambda: os.startfile(Path(client_path.get()) / 'mods'))
+    button(row(client), 'Open client config', lambda: os.startfile(Path(client_path.get()) / 'config'))
     def export():
         output = filedialog.asksaveasfilename(initialfile='Build-Explore-and-Create.zip', defaultextension='.zip', filetypes=[('CurseForge pack', '*.zip')])
-        if output: run('Export client pack', lambda: manager().export_pack(output))
+        if output:
+            def export_active():
+                connection = manager(); connection.config = dict(connection.config, client_path=client_path.get())
+                return connection.export_pack(output)
+            run('Export client pack', export_active)
     button(row(client), 'Export CurseForge pack', export)
     ttk.Label(client, text='To import: open CurseForge → Minecraft → Create Custom Profile → Import, then choose the exported ZIP.\nUse the Play screen to launch the matching profile and see the server address.\nClose Minecraft before replacing its mods or editing client settings.', wraplength=880).pack(anchor='w', pady=20)
 
@@ -532,12 +542,13 @@ def gui():
     ttk.Button(setup_actions, text='Test connection', command=test_connection).pack(side='left', padx=8)
     credential_text = tk.StringVar()
     ttk.Label(setup, textvariable=credential_text).grid(row=15, column=0, columnspan=2, sticky='w', pady=6)
+    ttk.Label(setup, text='Settings file: ' + str(CONFIG_PATH), wraplength=900).grid(row=16, column=0, columnspan=2, sticky='w', pady=6)
     def credential_summary():
         parts = []
         for key, name in [('api_key','API key'), ('sftp_password','SFTP password')]:
             try: secret(settings(),key); present = True
             except Exception: present = False
-            parts.append(name + ': ' + ('saved ✓' if present else 'missing'))
+            parts.append(name + ': ' + ('saved in Windows Credential Manager' if present else 'missing'))
         credential_text.set(' • '.join(parts) + ' • Blank fields keep saved credentials.')
     def close():
         if busy:
@@ -546,7 +557,7 @@ def gui():
     root.protocol('WM_DELETE_WINDOW', close)
     credential_summary(); update_controls()
     threading.Thread(target=log_worker, daemon=True).start()
-    poll(); root.after(200, refresh_live_status); root.mainloop()
+    poll(); root.after(200, refresh_live_status); root.after(350, refresh_sessions); root.mainloop()
 
 
 if __name__ == '__main__':
