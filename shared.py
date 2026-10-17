@@ -16,7 +16,7 @@ from core import APP_HOME, CONFIG_PATH, Manager
 import sessions
 import launcher
 
-VERSION = '2.1.0'
+VERSION = '2.1.1'
 LOCAL_SETTINGS = APP_HOME / 'player-settings.json'
 CATALOG = APP_HOME / 'shared-catalog.json'
 
@@ -246,7 +246,7 @@ def export_reis_connection(manager):
 
 
 class ReisClient:
-    """Read-only direct client; the panel enforces the friend's own permissions."""
+    """Direct client with read and start access; Reis enforces user permissions."""
     role = 'player'
 
     def __init__(self, config=None, token=None):
@@ -276,13 +276,26 @@ class ReisClient:
         packs = {key: dict(catalog.get(key, {}), label=value['label']) for key, value in state['sessions'].items()}
         return {'active': state.get('active'), 'sessions': packs, 'server': status,
                 'players': player_info(self.config['game_host'], self.config['game_port']) if status['state'] == 'running' else {'online': 0, 'names': []},
-                'recovery_required': recovery, 'role': self.role,
+                'recovery_required': recovery, 'role': self.role, 'can_start_active': True,
                 'address': f"{self.config['game_host']}:{self.config['game_port']}",
                 'operation': {'by': 'Another client'} if operation else None}
 
     def play(self, session_id, allow_disconnect=False):
         state = self.snapshot()
         if state['operation'] or state['recovery_required']: raise ValueError('A session operation is in progress. Refresh before joining.')
-        if session_id != state['active'] or state['server']['state'] != 'running':
-            raise ValueError('Player access can join only the active running session. Ask the owner to start or switch it.')
+        if session_id != state['active']:
+            raise ValueError('Player access can join or start only the active session. Ask the owner to switch it.')
+        if state['server']['state'] == 'offline':
+            # Recheck immediately before the only permitted mutation. Reis enforces
+            # control.start; no stop, restart, console, or file-write permission.
+            fresh = self.snapshot()
+            if fresh['active'] != session_id or fresh['operation'] or fresh['recovery_required']:
+                raise ValueError('The active session changed. Refresh before starting.')
+            if fresh['server']['state'] == 'offline': self.manager.api('/power', {'signal': 'start'})
+            self.manager.wait_state('running')
+            ready = self.snapshot()
+            if ready['active'] != session_id or ready['operation'] or ready['recovery_required']:
+                raise ValueError('The session changed while starting. Refresh before joining.')
+        elif state['server']['state'] != 'running':
+            raise ValueError('The server is starting or stopping. Wait and refresh before joining.')
         return {'state': 'complete'}

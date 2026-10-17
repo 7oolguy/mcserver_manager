@@ -14,7 +14,8 @@ No Oracle account, VPS, or always-on owner computer is needed.
    client pack requirements to `_control_sessions/catalog.json` without restarting
    Minecraft. The connection file contains addresses only, never credentials.
 2. In Reis / Users, add your friend's own email with `file.read` and
-   `file.read-content` only. Grant no power, write, console, SFTP, backup, user,
+   `file.read-content`, and `control.start` only. Grant no stop, restart, write,
+   console, SFTP, backup, user,
    or settings permissions. Read access covers ALL server files, including configs,
    logs, and worlds; it cannot be restricted to app metadata. Grant it only to a
    trusted friend. Never share your own API key or SFTP password.
@@ -26,9 +27,12 @@ No Oracle account, VPS, or always-on owner computer is needed.
 
 The friend sees active sessions, pack requirements, server status, and online players.
 The app refreshes every five seconds and disables Play when information is stale,
-a switch is in progress, or recovery is needed. Friends can join the active running
-pack; starting and switching sessions remain owner operations in this release.
-The existing server lock protects switches. No separate service is required.
+a switch is in progress, or recovery is needed. Friends can join or start the active
+pack; switching sessions remains an owner operation.
+The existing server lock protects owner switches. The app checks this lock before
+starting, but Reis does not provide an atomic start-if-session-unchanged operation.
+Avoid starting from another app or the panel while the owner is switching packs.
+No separate service is required.
 
 Minecraft login, preferences, local paths, and CurseForge profile IDs stay on each
 PC. CurseForge handles Microsoft sign-in. Regenerate the connection file after

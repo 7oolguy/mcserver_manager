@@ -28,7 +28,7 @@ class ReisTests(unittest.TestCase):
         self.assertNotIn('PRIVATE OWNER PATH', json.dumps(data))
         self.assertNotIn('friend-only-key', json.dumps(data))
         self.assertEqual(client.play('one'), {'state': 'complete'})
-        with self.assertRaisesRegex(ValueError, 'active running'): client.play('two', True)
+        with self.assertRaisesRegex(ValueError, 'active session'): client.play('two', True)
         self.assertTrue(all(call.args[0].startswith(('/files/list', '/files/contents', '/resources')) and len(call.args) == 1
                             for call in client.manager.api.call_args_list))
 
@@ -58,6 +58,26 @@ class ReisTests(unittest.TestCase):
             with self.subTest(url=url), self.assertRaises(ValueError):
                 shared.reis_config(dict(type='reis-direct', version=1, panel_url=url, server_id='example', game_host='localhost', game_port=25565))
 
+    def test_offline_active_session_starts_without_file_writes_or_switch(self):
+        client = self.client()
+        offline = {'active': 'one', 'server': {'state': 'offline'}, 'operation': None, 'recovery_required': False}
+        running = dict(offline, server={'state': 'running'})
+        client.snapshot = Mock(side_effect=[offline, offline, running])
+        client.manager.api = Mock()
+        client.manager.wait_state = Mock()
+        self.assertEqual(client.play('one'), {'state': 'complete'})
+        client.manager.api.assert_called_once_with('/power', {'signal': 'start'})
+        client.manager.wait_state.assert_called_once_with('running')
+
+    def test_start_rechecks_active_session_and_lock(self):
+        for fresh in ({'active': 'two', 'operation': None}, {'active': 'one', 'operation': {'by': 'Owner'}}):
+            client = self.client()
+            offline = {'active': 'one', 'server': {'state': 'offline'}, 'operation': None, 'recovery_required': False}
+            client.snapshot = Mock(side_effect=[offline, dict(offline, **fresh)])
+            client.manager.api = Mock()
+            with self.assertRaisesRegex(ValueError, 'changed'): client.play('one')
+            client.manager.api.assert_not_called()
+
     def test_failed_connection_does_not_replace_existing_settings_or_key(self):
         invite = dict(type='reis-direct', version=1, panel_url='https://panel.example.com', server_id='example', game_host='localhost', game_port=25565)
         with patch('shared.ReisClient') as client, patch('shared.save_local') as save, patch('keyring.set_password') as store:
@@ -73,3 +93,4 @@ class ReisTests(unittest.TestCase):
             invite = shared.export_reis_connection(manager)
         self.assertEqual(set(invite), set(shared.REIS_FIELDS) | {'type', 'version'})
         self.assertEqual(write.call_args.args[1], '_control_sessions/catalog.json')
+

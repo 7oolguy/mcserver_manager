@@ -135,7 +135,8 @@ class Desktop:
         if self.snapshot:
             data = self.snapshot
             allowed = allowed and not data.get('operation') and not data.get('recovery_required')
-            if data['role'] == 'player': allowed = allowed and self.selected() == data['active'] and data['server']['state'] == 'running'
+            if data['role'] == 'player':
+                allowed = allowed and self.selected() == data['active'] and (data['server']['state'] == 'running' or (data.get('can_start_active') and data['server']['state'] == 'offline'))
         self.play_button.configure(state='normal' if allowed else 'disabled')
 
     def play(self):
@@ -209,7 +210,7 @@ class Desktop:
             from core import Manager
             invite = shared.export_reis_connection(Manager())
             with Path(filename).open('x', encoding='utf-8') as stream: json.dump(invite, stream, indent=2)
-        self.run(operation, lambda result: messagebox.showinfo('Connection file created', 'Send this file to your friend. It contains no passwords.\nIn Reis → Users, add their own account with file.read and file.read-content only. They enter their own panel API key in the app.\nThese permissions can read ALL server files; they cannot be limited to session metadata. No write, power, console, SFTP, or backup access is needed.'))
+        self.run(operation, lambda result: messagebox.showinfo('Connection file created', 'Send this file to your friend. It contains no passwords.\nIn Reis → Users, add their own account with file.read, file.read-content, and control.start only. They enter their own panel API key in the app.\nThey can start the active session, but cannot switch packs, stop, or restart. Read access covers ALL server files. Do not grant write, console, SFTP, or backup access.'))
 
     def advanced(self):
         entry = [] if getattr(sys, 'frozen', False) else [str(Path(__file__).with_name('app.py'))]
