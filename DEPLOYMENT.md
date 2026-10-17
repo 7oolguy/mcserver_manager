@@ -1,3 +1,11 @@
+# Direct Reis setup (recommended)
+
+No additional hosting is needed. Follow the direct connection steps in README.md.
+The owner creates a connection file in the app and adds a separate read-only Reis
+subuser. Never share owner credentials. Read permission covers all server files.
+Switching remains owner-only. The instructions below are for the OPTIONAL legacy
+hosted service, which is not needed for direct syncing.
+
 # Owner deployment
 
 Do not send your hosting panel API key, SFTP password, settings, service database,

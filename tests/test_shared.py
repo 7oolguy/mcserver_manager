@@ -107,7 +107,7 @@ class UpdateTests(unittest.TestCase):
         return key, public, {'release': release, 'signature': base64.b64encode(key.sign(updates.canonical(release))).decode()}
     def test_trusted_release_and_version_order(self):
         _, public, envelope = self.signed()
-        self.assertEqual(updates.verify_manifest(envelope, public)['version'], '2.1.0')
+        self.assertEqual(updates.verify_manifest(envelope, public, current='2.0.0')['version'], '2.1.0')
         self.assertIsNone(updates.verify_manifest(envelope, public, current='2.2.0'))
     def test_tampered_manifest_is_rejected(self):
         _, public, envelope = self.signed(); envelope['release']['url'] = 'https://attacker.example/evil.msi'
@@ -134,5 +134,5 @@ class HomeTests(unittest.TestCase):
             with patch('desktop.CONFIG_PATH', Path('does-not-exist')), patch('shared.load_local', return_value={'auto_update': True, 'service_url': ''}):
                 home = Desktop(root, start_workers=False)
             self.assertEqual(str(home.play_button.cget('state')), 'disabled')
-            self.assertEqual(root.title(), 'Build Explore Control 2.0.0')
+            self.assertEqual(root.title(), 'Build Explore Control ' + shared.VERSION)
         finally: root.destroy()

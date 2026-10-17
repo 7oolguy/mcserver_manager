@@ -49,10 +49,10 @@ class Desktop:
         ttk.Button(actions, text='Get this modpack', command=self.get_pack).pack(side='left')
         ttk.Button(actions, text='Refresh', command=self.refresh).pack(side='right')
         ttk.Label(self.play_tab, textvariable=self.message, wraplength=680).pack(anchor='w', pady=12)
-        ttk.Label(self.connection_tab, text='Connect with a private invitation', style='State.TLabel').pack(anchor='w')
-        ttk.Label(self.connection_tab, text='Open the invitation file from the owner. You don’t need a hosting password.\nYour Minecraft account and installed modpacks stay on this computer.', wraplength=680).pack(anchor='w', pady=12)
+        ttk.Label(self.connection_tab, text='Connect directly to Reis', style='State.TLabel').pack(anchor='w')
+        ttk.Label(self.connection_tab, text='Open the owner’s connection file, then enter your own Reis panel API key.\nNo extra hosting is needed. Your Minecraft account stays on this computer.', wraplength=680).pack(anchor='w', pady=12)
         ttk.Button(self.connection_tab, text='Open invitation…', command=self.open_invite).pack(anchor='w')
-        self.connection = tk.StringVar(value=shared.load_local()['service_url'] or ('This computer · owner access' if CONFIG_PATH.exists() else 'Not connected yet'))
+        self.connection = tk.StringVar(value=(shared.load_local().get('reis') or {}).get('panel_url') or shared.load_local()['service_url'] or ('This computer · owner access' if CONFIG_PATH.exists() else 'Not connected yet'))
         ttk.Label(self.connection_tab, textvariable=self.connection, wraplength=680).pack(anchor='w', pady=12)
         ttk.Button(self.connection_tab, text='Choose CurseForge instances folder…', command=self.choose_root).pack(anchor='w', pady=8)
         if CONFIG_PATH.exists():
@@ -179,12 +179,23 @@ class Desktop:
     def open_invite(self):
         filename = filedialog.askopenfilename(filetypes=[('Private invitation', '*.becinvite'), ('JSON', '*.json')])
         if not filename: return
-        def operation():
+        try:
             path = Path(filename)
             if path.stat().st_size > 32768: raise ValueError('Invalid invitation file.')
-            shared.connect(json.loads(path.read_text(encoding='utf-8-sig')))
-            self.client = shared.RemoteClient()
-        self.run(operation, lambda result: (self.connection.set(shared.load_local()['service_url']), self.refresh()))
+            invitation = json.loads(path.read_text(encoding='utf-8-sig'))
+            token = None
+            if invitation.get('type') == 'reis-direct':
+                config = shared.reis_config(invitation)
+                token = simpledialog.askstring('Your Reis API key', 'Panel: ' + config['panel_url'] + '\nServer: ' + config['server_id'] + '\nVerify this address. Enter YOUR API key from this panel’s Account → API credentials.\nThe owner must grant your account read access first.', show='*')
+                if not token: return
+        except Exception as error:
+            messagebox.showerror('Invalid connection file', str(error)); return
+        def operation():
+            if invitation.get('type') == 'reis-direct':
+                shared.connect_reis(invitation, token); self.client = shared.ReisClient()
+            else:
+                shared.connect(invitation); self.client = shared.RemoteClient()
+        self.run(operation, lambda result: (self.connection.set((shared.load_local().get('reis') or {}).get('panel_url') or shared.load_local()['service_url']), self.refresh()))
 
     def choose_root(self):
         folder = filedialog.askdirectory(title='Choose CurseForge’s Instances folder')
@@ -192,17 +203,13 @@ class Desktop:
             config = shared.load_local(); config['instances_root'] = folder; shared.save_local(config)
 
     def invite(self):
-        url = simpledialog.askstring('Shared service address', 'HTTPS address of the deployed shared service:')
-        if not url: return
-        name = simpledialog.askstring('Friend access', 'Your friend’s name (player access):')
-        if not name: return
         filename = filedialog.asksaveasfilename(defaultextension='.becinvite', initialfile='Minecraft-invitation.becinvite')
         if not filename: return
         def operation():
-            from service import Service
-            invite = Service().invite(url, name)
+            from core import Manager
+            invite = shared.export_reis_connection(Manager())
             with Path(filename).open('x', encoding='utf-8') as stream: json.dump(invite, stream, indent=2)
-        self.run(operation, lambda result: messagebox.showinfo('Invitation created', 'Send this file privately. The shared service must be deployed with this same access database.'))
+        self.run(operation, lambda result: messagebox.showinfo('Connection file created', 'Send this file to your friend. It contains no passwords.\nIn Reis → Users, add their own account with file.read and file.read-content only. They enter their own panel API key in the app.\nThese permissions can read ALL server files; they cannot be limited to session metadata. No write, power, console, SFTP, or backup access is needed.'))
 
     def advanced(self):
         entry = [] if getattr(sys, 'frozen', False) else [str(Path(__file__).with_name('app.py'))]

@@ -4,36 +4,36 @@ A Windows app for playing Minecraft modpacks on a shared server. Choose a pack,
 click **Play Minecraft**, and launch the matching installed CurseForge profile.
 Worlds and progress stay with their server session.
 
-## Install and play
+## Install and play without extra hosting
 
-1. Download the `.msi` from [Releases](https://github.com/7oolguy/mcserver_manager/releases).
-2. Install it for your Windows account. Python is bundled; no separate Python setup
-   is required. Desktop and Start menu shortcuts are included.
-3. Open the app, select **Connection → Open invitation**, and choose the private
-   `.becinvite` file supplied by the server owner.
-4. Install the requested modpack in CurseForge. The app detects matching profiles;
-   use **Locate installed pack** if your instances are in another folder.
-5. Click **Play Minecraft**, then join the displayed address through Multiplayer.
+Install the Windows MSI from Releases. Python is bundled. Each PC runs its own app;
+Reis stores the shared server sessions and GitHub supplies signed app updates.
+No Oracle account, VPS, or always-on owner computer is needed.
 
-CurseForge handles Microsoft sign-in. Enable **Use CurseForge launcher** there if
-prompted. This app does not copy Minecraft accounts or launch tokens.
+1. Owner: choose Connection / Create a friend invitation in the app. This publishes
+   client pack requirements to `_control_sessions/catalog.json` without restarting
+   Minecraft. The connection file contains addresses only, never credentials.
+2. In Reis / Users, add your friend's own email with `file.read` and
+   `file.read-content` only. Grant no power, write, console, SFTP, backup, user,
+   or settings permissions. Read access covers ALL server files, including configs,
+   logs, and worlds; it cannot be restricted to app metadata. Grant it only to a
+   trusted friend. Never share your own API key or SFTP password.
+3. Your friend creates their OWN API key in Reis Account / API credentials. They
+   open your `.becinvite` file in the app, verify the panel address, and enter that
+   key. Access is verified before saving it in Windows Credential Manager.
+4. Install the matching modpack in CurseForge, then click Play Minecraft. The app
+   finds and verifies the local profile. Join through Multiplayer after loading.
 
-The owner can use **Advanced server controls**. Player invitations can view the
-shared server/session information and join the running pack. They cannot switch
-packs, stop the server, edit files, or issue console commands. Operator access can
-be granted explicitly through the service CLI.
+The friend sees active sessions, pack requirements, server status, and online players.
+The app refreshes every five seconds and disables Play when information is stale,
+a switch is in progress, or recovery is needed. Friends can join the active running
+pack; starting and switching sessions remain owner operations in this release.
+The existing server lock protects switches. No separate service is required.
 
-## What is shared
-
-The service synchronizes active session, session catalogue, required mod files,
-server status, online player information when available, and active operations.
-Clients refresh every five seconds and disable Play if the connection becomes
-stale. A server-side operation lock prevents competing session switches.
-
-Installation paths, CurseForge profile IDs, preferences, and Minecraft accounts
-remain local. The shared service keeps hosting API/SFTP credentials; player apps
-receive only a revocable invitation token stored in Windows Credential Manager.
-Invitations expire after 30 days by default. Send invitation files privately.
+Minecraft login, preferences, local paths, and CurseForge profile IDs stay on each
+PC. CurseForge handles Microsoft sign-in. Regenerate the connection file after
+changing client pack requirements to refresh the shared catalogue. Revoke a
+friend's server access in Reis / Users; they can revoke their own API key too.
 
 ## Server sessions and backups
 
@@ -65,12 +65,11 @@ Authenticode signing. The initial MSI is not Authenticode-signed; devices enforc
 trusted-publisher installation policies may require an organization-approved code
 signing certificate. Do not disable Windows protections to install it.
 
-## Host the shared service
+## Optional legacy shared service
 
-The shared service is implemented but needs a persistent HTTPS host. GitHub hosts
-source and installer releases; GitHub Pages/Actions do not run this private backend
-continuously. See [DEPLOYMENT.md](DEPLOYMENT.md) for the owner setup and Docker/TLS
-configuration. Do not distribute hosting credentials to friends.
+The earlier HTTPS service remains available for existing installations. Direct
+Reis syncing is the default and needs no extra host. The legacy service's isolated
+invitation roles need separate hosting; see DEPLOYMENT.md if intentionally using it.
 
 ## Develop and release
 

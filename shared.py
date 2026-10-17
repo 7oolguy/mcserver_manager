@@ -10,12 +10,13 @@ import time
 from urllib.parse import urlparse
 import urllib.request
 import uuid
+from urllib.parse import quote
 
 from core import APP_HOME, CONFIG_PATH, Manager
 import sessions
 import launcher
 
-VERSION = '2.0.0'
+VERSION = '2.1.0'
 LOCAL_SETTINGS = APP_HOME / 'player-settings.json'
 CATALOG = APP_HOME / 'shared-catalog.json'
 
@@ -48,6 +49,8 @@ def validate_url(url):
 
 
 def connect(invite):
+    if invite.get('type') == 'reis-direct':
+        raise ValueError('Enter your own Reis API key to connect directly.')
     url = validate_url(invite['service_url'])
     token = invite.get('token', '')
     if not isinstance(token, str) or len(token) < 32: raise ValueError('Invalid invitation.')
@@ -55,7 +58,7 @@ def connect(invite):
     RemoteClient(url, token).request('/v1/me')
     import keyring
     keyring.set_password('Build Explore Control Shared', url, token)
-    config = load_local(); config['service_url'] = url; save_local(config)
+    config = load_local(); config.pop('reis', None); config['service_url'] = url; save_local(config)
 
 
 def jar_manifest(folder):
@@ -191,6 +194,95 @@ class RemoteClient:
 
 
 def default_client():
+    if load_local().get('reis'): return ReisClient()
     if load_local()['service_url']: return RemoteClient()
     if CONFIG_PATH.exists(): return LocalClient()
     return None
+
+
+REIS_FIELDS = ('panel_url', 'server_id', 'game_host', 'game_port')
+
+
+def reis_config(invite):
+    from core import DEFAULTS
+    if invite.get('type') != 'reis-direct' or invite.get('version') != 1:
+        raise ValueError('Unsupported Reis connection file.')
+    config = dict(DEFAULTS)
+    config.update({key: invite[key] for key in REIS_FIELDS})
+    parsed = urlparse(config['panel_url'])
+    if parsed.scheme != 'https' or parsed.path not in ('', '/'):
+        raise ValueError('Use the HTTPS address of your Reis panel.')
+    config['panel_url'] = validate_url(config['panel_url'])
+    sessions.name(config['server_id'])
+    config['game_port'] = int(config['game_port'])
+    if not 1 <= config['game_port'] <= 65535: raise ValueError('Invalid game port.')
+    if not isinstance(config['game_host'], str) or not config['game_host'] or any(c.isspace() for c in config['game_host']):
+        raise ValueError('Invalid game address.')
+    return config
+
+
+def reis_key_name(config):
+    return config['panel_url'].rstrip('/') + '/' + config['server_id']
+
+
+def connect_reis(invite, token):
+    import keyring
+    config = reis_config(invite)
+    if not isinstance(token, str) or not token.strip(): raise ValueError('Enter your own panel API key.')
+    # Verify both server access and required file permissions before saving.
+    ReisClient(config, token).snapshot()
+    keyring.set_password('Build Explore Control Reis', reis_key_name(config), token)
+    local = load_local(); local['reis'] = {key: config[key] for key in REIS_FIELDS}
+    local['service_url'] = ''; save_local(local)
+
+
+def export_reis_connection(manager):
+    export_catalog(manager)
+    catalog = json.loads(CATALOG.read_text())
+    # Publish requirements only; never owner paths, profile GUIDs, or credentials.
+    with manager.sftp() as sftp:
+        sessions.write(sftp, sessions.ROOT + '/catalog.json', catalog)
+    return dict(type='reis-direct', version=1, **{key: manager.config[key] for key in REIS_FIELDS})
+
+
+class ReisClient:
+    """Read-only direct client; the panel enforces the friend's own permissions."""
+    role = 'player'
+
+    def __init__(self, config=None, token=None):
+        import keyring
+        self.config = config or reis_config(dict(type='reis-direct', version=1, **load_local()['reis']))
+        token = token or keyring.get_password('Build Explore Control Reis', reis_key_name(self.config))
+        if not token: raise ValueError('Connect using your own Reis API key.')
+        self.manager = Manager(self.config, api_key=token)
+
+    def read(self, filename):
+        return self.manager.api('/files/contents?file=' + quote('/' + sessions.ROOT + '/' + filename, safe=''))
+
+    def snapshot(self):
+        listing = self.manager.api('/files/list?directory=' + quote('/' + sessions.ROOT, safe=''))
+        names = {item['attributes']['name'] for item in listing['data']}
+        recovery = bool({'lock', 'pending.json', 'pending.json.previous'} & names)
+        operation = 'operation' in names
+        state = self.read('state.json' if 'state.json' in names else 'state.json.previous')
+        catalog = self.read('catalog.json' if 'catalog.json' in names else 'catalog.json.previous')
+        status = self.manager.status()
+        # A second listing/state read rejects a switch that overlapped this snapshot.
+        after = self.manager.api('/files/list?directory=' + quote('/' + sessions.ROOT, safe=''))
+        after_names = {item['attributes']['name'] for item in after['data']}
+        again = self.read('state.json' if 'state.json' in after_names else 'state.json.previous')
+        operation = operation or 'operation' in after_names or state != again
+        recovery = recovery or bool({'lock', 'pending.json', 'pending.json.previous'} & after_names)
+        packs = {key: dict(catalog.get(key, {}), label=value['label']) for key, value in state['sessions'].items()}
+        return {'active': state.get('active'), 'sessions': packs, 'server': status,
+                'players': player_info(self.config['game_host'], self.config['game_port']) if status['state'] == 'running' else {'online': 0, 'names': []},
+                'recovery_required': recovery, 'role': self.role,
+                'address': f"{self.config['game_host']}:{self.config['game_port']}",
+                'operation': {'by': 'Another client'} if operation else None}
+
+    def play(self, session_id, allow_disconnect=False):
+        state = self.snapshot()
+        if state['operation'] or state['recovery_required']: raise ValueError('A session operation is in progress. Refresh before joining.')
+        if session_id != state['active'] or state['server']['state'] != 'running':
+            raise ValueError('Player access can join only the active running session. Ask the owner to start or switch it.')
+        return {'state': 'complete'}

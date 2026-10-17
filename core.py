@@ -148,10 +148,11 @@ def properties(text, updates=None):
 
 
 class Manager:
-    def __init__(self, config=None, progress=None, cancel=None):
+    def __init__(self, config=None, progress=None, cancel=None, api_key=None):
         self.config = config or settings()
         self.progress = progress or (lambda message: None)
         self.cancel = cancel
+        self.api_key = api_key
 
     def check_cancel(self):
         if self.cancel is not None and self.cancel.is_set():
@@ -161,7 +162,7 @@ class Manager:
         base = self.config['panel_url'].rstrip('/')
         if not base.startswith('https://'):
             raise ValueError('Panel connection requires HTTPS.')
-        key = secret(self.config, 'api_key')
+        key = self.api_key or secret(self.config, 'api_key')
         url = base + '/api/client/servers/' + self.config['server_id'] + route
         request = urllib.request.Request(url, data=None if payload is None else json.dumps(payload).encode(),
             headers={'Authorization': 'Bearer ' + key, 'Accept': 'Application/vnd.pterodactyl.v1+json',
