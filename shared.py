@@ -16,7 +16,7 @@ from core import APP_HOME, CONFIG_PATH, Manager
 import sessions
 import launcher
 
-VERSION = '2.1.1'
+VERSION = '2.2.0'
 LOCAL_SETTINGS = APP_HOME / 'player-settings.json'
 CATALOG = APP_HOME / 'shared-catalog.json'
 
@@ -27,7 +27,8 @@ def installed_app():
 
 def load_local():
     defaults = {'service_url': '', 'profiles': {}, 'instances_root': str(Path.home() / 'curseforge/minecraft/Instances'),
-                'auto_update': True, 'update_url': ''}
+                'auto_update': True, 'update_url': '', 'launcher': 'curseforge',
+                'modrinth_root': str(Path(os.environ.get('APPDATA', str(Path.home()))) / 'ModrinthApp')}
     if LOCAL_SETTINGS.exists(): defaults.update(json.loads(LOCAL_SETTINGS.read_text(encoding='utf-8')))
     return defaults
 
@@ -94,17 +95,21 @@ def find_profile(item, root=None, mapped=None, verify=False):
     expected = item.get('mods') or []
     if not expected: raise ValueError('The owner needs to publish this pack’s client requirements first.')
     expected_sizes = {entry['name']: entry['size'] for entry in expected}
-    root = Path(root or load_local()['instances_root'])
+    local = load_local(); preference = local.get('launcher', 'curseforge')
+    root = Path(root or local['instances_root'])
     candidates = [Path(mapped)] if mapped else []
-    if root.is_dir(): candidates.extend(p for p in root.iterdir() if p.is_dir() and p not in candidates)
+    if preference == 'modrinth':
+        candidates.extend(Path(info['client_path']) for info in launcher.modrinth_profiles(local.get('modrinth_root')))
+    elif root.is_dir(): candidates.extend(p for p in root.iterdir() if p.is_dir() and p not in candidates)
     for folder in candidates:
-        if not (folder / 'minecraftinstance.json').is_file(): continue
+        if preference == 'curseforge' and not (folder / 'minecraftinstance.json').is_file(): continue
         found = {p.name: p.stat().st_size for p in (folder / 'mods').glob('*.jar')}
         if found != expected_sizes: continue
         if verify and jar_manifest(folder) != expected: continue
-        launcher.profile_info(str(folder))  # Validate the local GUID, never the owner's GUID.
+        try: launcher.profile_info(str(folder), launcher=preference, modrinth_root=local.get('modrinth_root'))
+        except ValueError: continue
         return folder
-    raise ValueError('Install the matching modpack in CurseForge, then locate its folder here.')
+    raise ValueError('Import the matching modpack in your selected launcher, then locate its folder here.')
 
 
 def player_info(host, port):

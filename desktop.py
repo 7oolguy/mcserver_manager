@@ -22,7 +22,7 @@ class Desktop:
         self.root = root; self.client = client
         self.events = queue.Queue(); self.busy = False; self.refreshing = False; self.closed = False
         self.snapshot = None; self.fresh_at = 0; self.ids = []; self.update = None
-        root.title('Build Explore Control ' + shared.VERSION); root.geometry('820x650'); root.minsize(760, 610)
+        root.title('Build Explore Control ' + shared.VERSION); root.geometry('820x800'); root.minsize(760, 740)
         style = ttk.Style(root); style.theme_use('clam')
         style.configure('.', font=('Segoe UI', 11)); style.configure('TButton', padding=(14, 9))
         style.configure('Title.TLabel', font=('Segoe UI', 25, 'bold')); style.configure('State.TLabel', font=('Segoe UI', 18, 'bold'))
@@ -49,14 +49,26 @@ class Desktop:
         ttk.Button(actions, text='Get this modpack', command=self.get_pack).pack(side='left')
         ttk.Button(actions, text='Refresh', command=self.refresh).pack(side='right')
         ttk.Label(self.play_tab, textvariable=self.message, wraplength=680).pack(anchor='w', pady=12)
+        setup_actions = ttk.Frame(self.play_tab); setup_actions.pack(fill='x')
+        ttk.Button(setup_actions, text='Import friend setup ZIP…', command=self.import_setup).pack(side='left')
+        ttk.Button(setup_actions, text='Finish launcher import', command=self.finish_import).pack(side='left', padx=8)
+        self.setup_text = tk.StringVar()
+        ttk.Label(self.play_tab, textvariable=self.setup_text, wraplength=680).pack(anchor='w', pady=6)
         ttk.Label(self.connection_tab, text='Connect directly to Reis', style='State.TLabel').pack(anchor='w')
-        ttk.Label(self.connection_tab, text='Open the owner’s connection file, then enter your own Reis panel API key.\nNo extra hosting is needed. Your Minecraft account stays on this computer.', wraplength=680).pack(anchor='w', pady=12)
-        ttk.Button(self.connection_tab, text='Open invitation…', command=self.open_invite).pack(anchor='w')
+        ttk.Label(self.connection_tab, text='Import the server config exported by the admin controller.\nServer details and sessions configure automatically; authenticate with your own Reis key once.', wraplength=680).pack(anchor='w', pady=12)
+        ttk.Button(self.connection_tab, text='Import server config…', command=self.open_invite).pack(anchor='w')
         self.connection = tk.StringVar(value=(shared.load_local().get('reis') or {}).get('panel_url') or shared.load_local()['service_url'] or ('This computer · owner access' if CONFIG_PATH.exists() else 'Not connected yet'))
         ttk.Label(self.connection_tab, textvariable=self.connection, wraplength=680).pack(anchor='w', pady=12)
         ttk.Button(self.connection_tab, text='Choose CurseForge instances folder…', command=self.choose_root).pack(anchor='w', pady=8)
+        ttk.Label(self.connection_tab, text='Minecraft launcher').pack(anchor='w')
+        self.launcher_choice = ttk.Combobox(self.connection_tab, state='readonly', values=['CurseForge', 'Modrinth'])
+        self.launcher_choice.set('Modrinth' if shared.load_local().get('launcher') == 'modrinth' else 'CurseForge')
+        self.launcher_choice.pack(anchor='w', pady=4)
+        self.launcher_choice.bind('<<ComboboxSelected>>', self.choose_launcher)
+        ttk.Button(self.connection_tab, text='Choose Modrinth data folder…', command=self.choose_modrinth_root).pack(anchor='w', pady=4)
         if CONFIG_PATH.exists():
-            ttk.Button(self.connection_tab, text='Create a friend invitation…', command=self.invite).pack(anchor='w', pady=8)
+            ttk.Button(self.connection_tab, text='Export player configuration…', command=self.invite).pack(anchor='w', pady=8)
+            ttk.Button(self.connection_tab, text='Export selected pack for a friend…', command=self.export_setup).pack(anchor='w', pady=4)
             ttk.Button(self.connection_tab, text='Advanced server controls', command=self.advanced).pack(anchor='w', pady=8)
         self.update_text = tk.StringVar(value='Version ' + shared.VERSION + '\nUpdates are installed when the app is idle. Settings and worlds are preserved.')
         ttk.Label(update_tab, textvariable=self.update_text, wraplength=680).pack(anchor='w', pady=12)
@@ -65,7 +77,7 @@ class Desktop:
         ttk.Button(update_tab, text='Check for updates', command=self.check_updates).pack(anchor='w', pady=12)
         self.install_button = ttk.Button(update_tab, text='Install verified update', command=self.install_update, state='disabled'); self.install_button.pack(anchor='w')
         self.progress = ttk.Progressbar(outer, mode='indeterminate'); self.progress.pack(fill='x', pady=(12, 4))
-        ttk.Label(outer, text='Minecraft sign-in is handled by CurseForge. Join through Multiplayer after loading.', wraplength=720).pack(anchor='w')
+        ttk.Label(outer, text='Your selected launcher handles Minecraft sign-in. Join through Multiplayer after loading.', wraplength=720).pack(anchor='w')
         root.protocol('WM_DELETE_WINDOW', self.close)
         if start_workers:
             root.after(100, self.refresh); root.after(5000, self.periodic_refresh)
@@ -106,6 +118,9 @@ class Desktop:
                     if self.client is None: self.client = shared.default_client()
                     if self.client is None: raise ValueError('Open an invitation in Connection to get started.')
                     if isinstance(self.client, shared.LocalClient) and not shared.CATALOG.exists(): shared.export_catalog(self.client.manager)
+                    if shared.load_local().get('pending_imports'):
+                        import friendpack
+                        friendpack.finish_pending()
                     self.events.put(('snapshot', self.client.snapshot(), None))
                 except Exception as error: self.events.put(('offline', str(error), None))
             threading.Thread(target=worker, daemon=True).start()
@@ -128,6 +143,7 @@ class Desktop:
         players = data.get('players', {}); count = players.get('online')
         self.players.set(('Players online: ' + str(count) if count is not None else 'Player count unavailable') + (' · ' + ', '.join(players.get('names', [])) if players.get('names') else ''))
         if data.get('operation'): self.message.set('A server operation is in progress. Everyone will see the result here.')
+        self.setup_text.set('Finish the import in your launcher. The app will detect and verify it automatically.' if shared.load_local().get('pending_imports') else '')
         self.render_permissions()
 
     def render_permissions(self):
@@ -135,6 +151,7 @@ class Desktop:
         if self.snapshot:
             data = self.snapshot
             allowed = allowed and not data.get('operation') and not data.get('recovery_required')
+            allowed = allowed and self.selected() not in shared.load_local().get('pending_imports', {})
             if data['role'] == 'player':
                 allowed = allowed and self.selected() == data['active'] and (data['server']['state'] == 'running' or (data.get('can_start_active') and data['server']['state'] == 'offline'))
         self.play_button.configure(state='normal' if allowed else 'disabled')
@@ -151,7 +168,7 @@ class Desktop:
         self.message.set('Checking your installed modpack, then preparing the server…')
         def operation():
             folder = shared.find_profile(item, config['instances_root'], config['profiles'].get(key), verify=True)
-            info = launcher.profile_info(str(folder))
+            info = launcher.profile_info(str(folder), launcher=config.get('launcher', 'curseforge'), modrinth_root=config.get('modrinth_root'))
             self.client.play(key, allow_disconnect=confirm)
             manager = type('Connection', (), {'config': {'game_host': data['address'].rsplit(':', 1)[0], 'game_port': data['address'].rsplit(':', 1)[1]}})()
             return launcher.request_launch(info, manager)
@@ -160,7 +177,7 @@ class Desktop:
     def locate(self):
         key = self.selected()
         if not key: return
-        folder = filedialog.askdirectory(title='Choose this modpack’s CurseForge profile folder')
+        folder = filedialog.askdirectory(title='Choose this modpack’s installed profile folder')
         if not folder: return
         def operation():
             found = shared.find_profile(self.snapshot['sessions'][key], root=Path(folder).parent, mapped=folder, verify=True)
@@ -175,10 +192,10 @@ class Desktop:
         from urllib.parse import urlparse
         parsed = urlparse(url)
         if parsed.scheme == 'https' and parsed.hostname in ('www.curseforge.com', 'curseforge.com'): webbrowser.open(url)
-        else: messagebox.showinfo('Get this modpack', 'Ask the owner for this custom modpack export and import it in CurseForge.')
+        else: messagebox.showinfo('Get this modpack', 'Ask the owner for a friend setup ZIP, then use Import friend setup ZIP here.')
 
     def open_invite(self):
-        filename = filedialog.askopenfilename(filetypes=[('Private invitation', '*.becinvite'), ('JSON', '*.json')])
+        filename = filedialog.askopenfilename(filetypes=[('Server configuration', '*.becconfig'), ('Older connection file', '*.becinvite'), ('JSON', '*.json')])
         if not filename: return
         try:
             path = Path(filename)
@@ -187,7 +204,10 @@ class Desktop:
             token = None
             if invitation.get('type') == 'reis-direct':
                 config = shared.reis_config(invitation)
-                token = simpledialog.askstring('Your Reis API key', 'Panel: ' + config['panel_url'] + '\nServer: ' + config['server_id'] + '\nVerify this address. Enter YOUR API key from this panel’s Account → API credentials.\nThe owner must grant your account read access first.', show='*')
+                import keyring
+                token = keyring.get_password('Build Explore Control Reis', shared.reis_key_name(config))
+                if not token:
+                    token = simpledialog.askstring('Your Reis API key', 'Panel: ' + config['panel_url'] + '\nServer: ' + config['server_id'] + '\nVerify this address. Enter YOUR API key from this panel’s Account → API credentials.\nThe owner must grant your account read/start access first. This is saved securely for next time.', show='*')
                 if not token: return
         except Exception as error:
             messagebox.showerror('Invalid connection file', str(error)); return
@@ -203,8 +223,61 @@ class Desktop:
         if folder:
             config = shared.load_local(); config['instances_root'] = folder; shared.save_local(config)
 
+    def choose_launcher(self, event=None):
+        config = shared.load_local(); config['launcher'] = self.launcher_choice.get().lower(); shared.save_local(config)
+        self.message.set('Using ' + self.launcher_choice.get() + '. Import or locate this pack in that launcher.')
+
+    def choose_modrinth_root(self):
+        folder = filedialog.askdirectory(title='Choose Modrinth data folder (contains app.db and instances)')
+        if folder:
+            config = shared.load_local(); config['modrinth_root'] = folder; shared.save_local(config)
+
+    def export_setup(self):
+        key = self.selected()
+        if not key: return
+        filename = filedialog.asksaveasfilename(defaultextension='.zip', initialfile=key + '-friend-setup.zip')
+        if not filename: return
+        def operation():
+            import friendpack
+            from core import Manager
+            return friendpack.export(Manager(), key, filename)
+        self.run(operation, lambda result: messagebox.showinfo('Friend setup ready', 'Send this ZIP to your friend. They choose their launcher, then use Play → Import friend setup ZIP.\nTheir own Reis API key and Minecraft login are still required.'))
+
+    def import_setup(self):
+        filename = filedialog.askopenfilename(filetypes=[('Friend setup ZIP', '*.zip'), ('Modrinth pack', '*.mrpack')])
+        if not filename: return
+        import friendpack
+        def prepared(setup):
+            config = shared.reis_config(setup['connection'])
+            token = simpledialog.askstring('Connect your Reis account', 'Pack: ' + setup['requirements']['label'] + '\nPanel: ' + config['panel_url'] + '\nVerify this address, then enter YOUR Reis API key.\nThe owner must add you as a subuser first.', show='*')
+            if not token: return
+            def installed(result):
+                self.client = shared.ReisClient(); self.connection.set(config['panel_url']); self.refresh()
+                if result['ready']: self.message.set('Setup verified. This pack is ready to play when its server session is active.')
+                else: self.finish_import()
+            self.run(lambda: friendpack.import_pack(filename, token), installed)
+        self.message.set('Checking the setup ZIP and its mod files…')
+        self.run(lambda: friendpack.inspect(filename), prepared)
+
+    def finish_import(self):
+        pending = shared.load_local().get('pending_imports', {})
+        if not pending:
+            messagebox.showinfo('Launcher setup', 'No unfinished setup. Choose Import friend setup ZIP to add a pack.'); return
+        item = pending.get(self.selected()) or next(reversed(pending.values()))
+        path = item['zip']
+        self.root.clipboard_clear(); self.root.clipboard_append(path)
+        def operation():
+            import friendpack
+            friendpack.open_import(path)
+        def opened(result):
+            name = self.launcher_choice.get()
+            text = ('In CurseForge, choose Minecraft → Import → Choose ZIP and paste the copied file path.' if name == 'CurseForge' else 'Confirm the pack import in Modrinth. If needed, use Import from file and select the copied pack path.')
+            self.message.set('Finish the import in ' + name + '. This app will detect the completed profile.')
+            messagebox.showinfo('Finish setup in ' + name, text + '\n\n' + path + '\n\nYour launcher installs Minecraft and the loader and handles sign-in. Keep this app open; it verifies the imported files automatically.')
+        self.run(operation, opened)
+
     def invite(self):
-        filename = filedialog.asksaveasfilename(defaultextension='.becinvite', initialfile='Minecraft-invitation.becinvite')
+        filename = filedialog.asksaveasfilename(defaultextension='.becconfig', initialfile='Minecraft-server.becconfig')
         if not filename: return
         def operation():
             from core import Manager

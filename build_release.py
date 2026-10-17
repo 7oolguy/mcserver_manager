@@ -14,7 +14,7 @@ from shared import VERSION
 ROOT = Path(__file__).parent.resolve()
 NAMESPACE = uuid.UUID('b50cb348-22f2-4c2c-a586-cb7ad8f91c17')
 UPGRADE_CODE = '{4A6D7754-071A-49E1-9688-B32F5A360966}'
-APP_FILES = ('app.py', 'core.py', 'sessions.py', 'launcher.py', 'shared.py', 'service.py', 'desktop.py', 'updates.py')
+APP_FILES = ('app.py', 'core.py', 'sessions.py', 'launcher.py', 'shared.py', 'service.py', 'desktop.py', 'updates.py', 'friendpack.py')
 
 
 def identity(value): return '{' + str(uuid.uuid5(NAMESPACE, value)).upper() + '}'

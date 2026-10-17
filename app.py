@@ -34,6 +34,7 @@ def cli(argv):
     subs.add_parser('session-backup')
     subs.add_parser('launch-minecraft')
     play = subs.add_parser('play-session'); play.add_argument('id')
+    friend = subs.add_parser('friend-export'); friend.add_argument('id'); friend.add_argument('output_path')
     register = subs.add_parser('session-register'); register.add_argument('id'); register.add_argument('label')
     importing = subs.add_parser('session-import'); importing.add_argument('id'); importing.add_argument('label'); importing.add_argument('folder'); importing.add_argument('--client-path', default='')
     session_switch = subs.add_parser('session-switch'); session_switch.add_argument('id'); session_switch.add_argument('--start', action='store_true')
@@ -41,7 +42,10 @@ def cli(argv):
     manager = Manager()
     try:
         action = args.action
-        if action in ('launch-minecraft', 'play-session'):
+        if action == 'friend-export':
+            import friendpack
+            result = friendpack.export(manager, args.id, args.output_path)
+        elif action in ('launch-minecraft', 'play-session'):
             import launcher
             result = launcher.launch_active(manager) if action == 'launch-minecraft' else launcher.play_session(manager, args.id)
         elif action.startswith('session'):
@@ -484,6 +488,16 @@ def gui():
             if path and Path(path).is_dir(): os.startfile(path)
             else: messagebox.showinfo('Client profile', 'Launch the matching modpack from your CurseForge library.')
     button(row(sessions_tab), 'Open matching client folder', lambda: ui_action(open_session_client))
+    def export_friend_setup():
+        selected = session_list.selection()
+        if not selected:
+            messagebox.showinfo('Select a session', 'Choose the modpack session to send to your friend.'); return
+        session_id = selected[0]
+        output = filedialog.asksaveasfilename(initialfile=session_id + '-friend-setup.zip', defaultextension='.zip', filetypes=[('Friend setup ZIP', '*.zip')])
+        if not output: return
+        import friendpack
+        run('Export friend setup', lambda: friendpack.export(manager(), session_id, output))
+    button(row(sessions_tab), 'Export friend setup ZIP', export_friend_setup)
     def session_tab_changed(event):
         if notebook.select() == str(sessions_tab) and not busy:
             refresh_sessions()
@@ -540,6 +554,16 @@ def gui():
             return 'Panel API and SFTP connected. Server: ' + result['state']
         run('Test connection', test)
     ttk.Button(setup_actions, text='Test connection', command=test_connection).pack(side='left', padx=8)
+    def export_player_configuration():
+        output = filedialog.asksaveasfilename(initialfile='Minecraft-server.becconfig', defaultextension='.becconfig', filetypes=[('Player configuration', '*.becconfig')])
+        if not output: return
+        def export_config():
+            import shared
+            data = shared.export_reis_connection(manager())
+            with Path(output).open('x', encoding='utf-8') as stream: json.dump(data, stream, indent=2)
+            return 'Player configuration exported. Your friend imports this file in Play → Connection → Import server config. They authenticate with their own Reis API key; no owner credentials are included.'
+        run('Export player configuration', export_config)
+    ttk.Button(setup_actions, text='Export player configuration', command=export_player_configuration).pack(side='left', padx=8)
     credential_text = tk.StringVar()
     ttk.Label(setup, textvariable=credential_text).grid(row=15, column=0, columnspan=2, sticky='w', pady=6)
     ttk.Label(setup, text='Settings file: ' + str(CONFIG_PATH), wraplength=900).grid(row=16, column=0, columnspan=2, sticky='w', pady=6)
